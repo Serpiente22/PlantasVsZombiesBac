@@ -8,7 +8,7 @@ class CustomIoAdapter extends IoAdapter {
     // Usamos Partial<ServerOptions> para evitar errores de tipo
     const opts: Partial<ServerOptions> = {
       ...(options ?? {}),
-      transports: ['websocket'], // 🔹 Solo WebSocket
+      transports: ['polling', 'websocket'], // ✅ polling primero, luego websocket
     };
     return super.createIOServer(port, opts as ServerOptions);
   }
