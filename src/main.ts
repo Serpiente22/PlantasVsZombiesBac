@@ -1,4 +1,3 @@
-// src/main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { IoAdapter } from '@nestjs/platform-socket.io';
@@ -9,11 +8,14 @@ class CustomIoAdapter extends IoAdapter {
     const opts: Partial<ServerOptions> = {
       ...(options ?? {}),
       cors: {
-        origin: '*', // Permitir cualquier origen (frontend)
-        methods: ['GET', 'POST'],
-        credentials: true,
+        origin: [
+          'http://localhost:3000', // 👈 para desarrollo local
+          'http://localhost:3001', // 👈 si usas ese puerto
+          'https://pvz-frontend.onrender.com', // 👈 si luego lo subes a Render
+        ],
+        credentials: true, // 👈 importante para evitar el error CORS
       },
-      transports: ['polling', 'websocket'], // ✅ Soporte para Render
+      transports: ['websocket'], // 👈 solo WebSocket (sin polling)
     };
     return super.createIOServer(port, opts as ServerOptions);
   }
@@ -22,19 +24,22 @@ class CustomIoAdapter extends IoAdapter {
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Permitir CORS globalmente
+  // Permitir CORS explícitamente
   app.enableCors({
-    origin: '*',
-    methods: ['GET', 'POST'],
+    origin: [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://pvz-frontend.onrender.com',
+    ],
     credentials: true,
   });
 
-  // Adaptador Socket.IO personalizado
+  // Adaptador de socket personalizado
   app.useWebSocketAdapter(new CustomIoAdapter(app));
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port, '0.0.0.0');
-  console.log(`🚀 Servidor corriendo en puerto ${port}`);
+  console.log(`✅ Servidor corriendo en puerto ${port}`);
 }
 
 bootstrap();
