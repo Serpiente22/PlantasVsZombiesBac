@@ -20,14 +20,15 @@ interface GameState {
 
 @Injectable()
 export class GameService {
-  private games: GameState[] = [];
+  // 🔹 Usamos un Map en lugar de un array (más eficiente y limpio)
+  private games: Map<string, GameState> = new Map();
 
   constructor(private readonly roomsService: RoomsService) {}
 
   // 🧱 Crear nueva partida asociada a una sala
-  createGame(roomId: string) {
+  createGame(roomId: string): GameState | undefined {
     const room = this.roomsService.getRoom(roomId);
-    if (!room) return null;
+    if (!room) return undefined;
 
     const game: GameState = {
       roomId,
@@ -38,7 +39,7 @@ export class GameService {
       maxWaves: 5,
     };
 
-    this.games.push(game);
+    this.games.set(roomId, game);
     return game;
   }
 
@@ -145,7 +146,7 @@ export class GameService {
       return;
     }
 
-    // Recompensa al jugador zombie con más cerebros
+    // Recompensa al jugador zombie
     for (const player of game.players) {
       if (player.role === 'zombie') {
         player.resources += 500 + game.wave * 100;
@@ -160,7 +161,7 @@ export class GameService {
 
   // 🧩 Obtener partida por ID
   getGame(roomId: string): GameState | undefined {
-    return this.games.find((g) => g.roomId === roomId);
+    return this.games.get(roomId);
   }
 
   // 🔥 Eliminar jugador desconectado
@@ -172,7 +173,7 @@ export class GameService {
 
     if (room.players.length === 0) {
       this.roomsService.deleteRoom(room.id);
-      this.games = this.games.filter((g) => g.roomId !== room.id);
+      this.games.delete(room.id);
       console.log(`Sala ${room.id} eliminada (vacía).`);
     }
   }

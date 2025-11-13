@@ -15,7 +15,7 @@ import { GameService } from './game.service';
   cors: {
     origin: '*',
   },
-  transports: ['websocket'], // 🔹 Forzamos WebSocket
+  transports: ['websocket'],
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -47,7 +47,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     client.join(data.roomId);
-    console.log(`Sala creada: ${data.roomId}`);
+    console.log(`🌿 Sala creada: ${data.roomId}`);
     this.server.to(data.roomId).emit('roomCreated', room);
   }
 
@@ -64,7 +64,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     if (room) {
       client.join(data.roomId);
-      console.log(`Jugador ${data.playerName} se unió a la sala ${data.roomId}`);
+      console.log(`🧟 Jugador ${data.playerName} se unió a la sala ${data.roomId}`);
       this.server.to(data.roomId).emit('roomJoined', room);
     } else {
       client.emit('errorJoining', 'No se pudo unir a la sala.');
@@ -76,13 +76,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string },
   ) {
-    console.log(`Iniciando juego en la sala ${data.roomId}`);
+    console.log(`🎮 Iniciando juego en la sala ${data.roomId}`);
+
+    // 🔹 Crear el juego si aún no existe
+    let game = this.gameService.getGame(data.roomId);
+    if (!game) {
+      game = this.gameService.createGame(data.roomId);
+      console.log(`✅ Partida creada para la sala ${data.roomId}`);
+    }
+
+    // 🔹 Agregar jugadores desde la sala
+    const room = this.roomsService.getRoom(data.roomId);
+    if (room) {
+      for (const player of room.players) {
+        this.gameService.addPlayerToGame(data.roomId, {
+          id: player.id,
+          name: player.name,
+          role: player.side,
+          resources: 0,
+        });
+      }
+    }
+
+    // 🚀 Iniciar el juego
     this.gameService.startGame(this.server, data.roomId);
+    console.log(`🔥 Juego iniciado en la sala ${data.roomId}`);
   }
 
   @SubscribeMessage('placePlant')
   handlePlacePlant(@MessageBody() data: any) {
-    console.log(`Planta colocada por ${data.playerId} en sala ${data.roomId}`);
+    console.log(`🌱 Planta colocada por ${data.playerId} en sala ${data.roomId}`);
     this.gameService.placePlant(
       this.server,
       data.roomId,
@@ -93,7 +116,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('placeZombie')
   handlePlaceZombie(@MessageBody() data: any) {
-    console.log(`Zombie colocado por ${data.playerId} en sala ${data.roomId}`);
+    console.log(`🧟 Zombie colocado por ${data.playerId} en sala ${data.roomId}`);
     this.gameService.placeZombie(
       this.server,
       data.roomId,
