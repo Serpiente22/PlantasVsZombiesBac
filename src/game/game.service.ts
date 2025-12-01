@@ -55,15 +55,9 @@ export class GameService {
     if (!game) return;
 
     const exists = game.players.find((p) => p.id === player.id);
-    if (!exists) game.players.push(player);
-  }
-
-  setPlayerRole(roomId: string, playerId: string, role: 'plant' | 'zombie') {
-    const game = this.getGame(roomId);
-    if (!game) return;
-
-    const existing = game.players.find((p) => p.id === playerId);
-    if (existing) existing.role = role;
+    if (!exists) {
+      game.players.push(player);
+    }
   }
 
   startGame(server: Server, roomId: string) {
@@ -73,13 +67,14 @@ export class GameService {
     game.status = 'in-progress';
     game.wave = 1;
 
-    // Inicializar recursos
+    // Inicializar recursos base
     for (const player of game.players) {
       player.resources = player.role === 'plant' ? 50 : 1000;
     }
 
     // Enviar estado inicial al frontend
     server.to(roomId).emit('gameStarted', {
+      roomId,
       wave: game.wave,
       players: game.players,
       status: game.status,
@@ -101,7 +96,11 @@ export class GameService {
     }
 
     player.resources -= cost;
-    game.board[plantData.position] = { type: 'plant', ...plantData };
+
+    game.board[plantData.position] = {
+      type: 'plant',
+      ...plantData,
+    };
 
     server.to(roomId).emit('plantPlaced', {
       playerId,
@@ -125,7 +124,11 @@ export class GameService {
     }
 
     player.resources -= cost;
-    game.board[zombieData.position] = { type: 'zombie', ...zombieData };
+
+    game.board[zombieData.position] = {
+      type: 'zombie',
+      ...zombieData,
+    };
 
     server.to(roomId).emit('zombiePlaced', {
       playerId,
@@ -158,6 +161,7 @@ export class GameService {
       return;
     }
 
+    // Solo zombies obtienen recursos por wave
     for (const player of game.players) {
       if (player.role === 'zombie') {
         player.resources += 500 + game.wave * 100;
@@ -170,7 +174,7 @@ export class GameService {
     });
   }
 
-  getGame(roomId: string): GameState | undefined {
+  getGame(roomId: string) {
     return this.games.get(roomId);
   }
 
