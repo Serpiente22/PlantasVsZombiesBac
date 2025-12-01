@@ -6,7 +6,7 @@ interface PlayerState {
   id: string;
   name: string;
   role: 'plant' | 'zombie';
-  resources: number; // soles o cerebros
+  resources: number;
 }
 
 interface GameState {
@@ -20,12 +20,19 @@ interface GameState {
 
 @Injectable()
 export class GameService {
-  // 🔹 Usamos un Map en lugar de un array (más eficiente y limpio)
   private games: Map<string, GameState> = new Map();
 
   constructor(private readonly roomsService: RoomsService) {}
 
-  // 🧱 Crear nueva partida asociada a una sala
+  // Crear tablero inicial (45 celdas)
+  private createBoard() {
+    const board: Record<string, any> = {};
+    for (let i = 0; i < 45; i++) {
+      board[`cell-${i}`] = null;
+    }
+    return board;
+  }
+
   createGame(roomId: string): GameState | undefined {
     const room = this.roomsService.getRoom(roomId);
     if (!room) return undefined;
@@ -33,7 +40,7 @@ export class GameService {
     const game: GameState = {
       roomId,
       players: [],
-      board: {},
+      board: this.createBoard(),
       status: 'waiting',
       wave: 0,
       maxWaves: 5,
@@ -43,7 +50,6 @@ export class GameService {
     return game;
   }
 
-  // 🎮 Añadir jugador a la partida
   addPlayerToGame(roomId: string, player: PlayerState) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -52,7 +58,6 @@ export class GameService {
     if (!exists) game.players.push(player);
   }
 
-  // 🔄 Asignar rol a un jugador (plant / zombie)
   setPlayerRole(roomId: string, playerId: string, role: 'plant' | 'zombie') {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -61,7 +66,6 @@ export class GameService {
     if (existing) existing.role = role;
   }
 
-  // 🚀 Iniciar el juego
   startGame(server: Server, roomId: string) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -69,20 +73,20 @@ export class GameService {
     game.status = 'in-progress';
     game.wave = 1;
 
-    // Inicializar recursos según el rol
+    // Inicializar recursos
     for (const player of game.players) {
       player.resources = player.role === 'plant' ? 50 : 1000;
     }
 
-    // Emitir evento al frontend
+    // Enviar estado inicial al frontend
     server.to(roomId).emit('gameStarted', {
       wave: game.wave,
       players: game.players,
       status: game.status,
+      board: game.board,
     });
   }
 
-  // 🌻 Colocar planta
   placePlant(server: Server, roomId: string, playerId: string, plantData: any) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -99,10 +103,14 @@ export class GameService {
     player.resources -= cost;
     game.board[plantData.position] = { type: 'plant', ...plantData };
 
-    server.to(roomId).emit('plantPlaced', { playerId, plantData, board: game.board });
+    server.to(roomId).emit('plantPlaced', {
+      playerId,
+      plantData,
+      board: game.board,
+      resources: player.resources,
+    });
   }
 
-  // 🧟 Colocar zombie
   placeZombie(server: Server, roomId: string, playerId: string, zombieData: any) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -119,10 +127,14 @@ export class GameService {
     player.resources -= cost;
     game.board[zombieData.position] = { type: 'zombie', ...zombieData };
 
-    server.to(roomId).emit('zombiePlaced', { playerId, zombieData, board: game.board });
+    server.to(roomId).emit('zombiePlaced', {
+      playerId,
+      zombieData,
+      board: game.board,
+      resources: player.resources,
+    });
   }
 
-  // ☀️ Recoger soles (jugador plantas)
   collectSun(server: Server, roomId: string, playerId: string, amount: number) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -131,10 +143,10 @@ export class GameService {
     if (!player || player.role !== 'plant') return;
 
     player.resources += amount;
+
     server.to(player.id).emit('updateResources', player.resources);
   }
 
-  // 🌊 Pasar a la siguiente horda
   nextWave(server: Server, roomId: string) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -146,7 +158,6 @@ export class GameService {
       return;
     }
 
-    // Recompensa al jugador zombie
     for (const player of game.players) {
       if (player.role === 'zombie') {
         player.resources += 500 + game.wave * 100;
@@ -159,12 +170,10 @@ export class GameService {
     });
   }
 
-  // 🧩 Obtener partida por ID
   getGame(roomId: string): GameState | undefined {
     return this.games.get(roomId);
   }
 
-  // 🔥 Eliminar jugador desconectado
   removePlayer(clientId: string) {
     const room = this.roomsService.findRoomByPlayer(clientId);
     if (!room) return;
