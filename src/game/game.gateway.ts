@@ -75,14 +75,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     console.log(`🧟 ${data.playerName} se unió a ${data.roomId}`);
 
     this.server.to(data.roomId).emit('roomJoined', room);
-
-    // 🔥 Cuando ya hay 2 jugadores → iniciar automáticamente
-    if (room.status === 'ready') {
-      this.startGame(room.id);
-    }
   }
 
-  // 🔥 LÓGICA PARA INICIAR JUEGO
+  // 🎮 Handler del BOTÓN "JUGAR"
+  @SubscribeMessage('startGame')
+  handleStartGame(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string }
+  ) {
+    console.log(`▶️ startGame recibido para sala ${data.roomId}`);
+
+    this.startGame(data.roomId);
+
+    // 🔥 Evento que tu frontend ESPERA
+    this.server.to(data.roomId).emit('gameInitialized');
+  }
+
+  // 🔥 LÓGICA PRIVADA PARA ARRANCAR EL JUEGO
   private startGame(roomId: string) {
     console.log(`🎮 Iniciando juego en sala ${roomId}`);
 
@@ -94,10 +103,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     const room = this.roomsService.getRoom(roomId);
-
     if (!room) return;
 
-    // Registrar jugadores en el GameService
+    // Registrar jugadores
     for (const player of room.players) {
       this.gameService.addPlayerToGame(roomId, {
         id: player.id,
@@ -107,12 +115,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
 
-    // Inicializar tablero y estado
+    // Iniciar el estado real del game
     this.gameService.startGame(this.server, roomId);
 
-    const gameState = this.gameService.getPublicGameState(roomId);
-
-    // 🔥 Enviar estado inicial del juego al frontend
+    // Show internal "gameStarted"
+    const gameState = this.gameService.getGame(roomId);
     this.server.to(roomId).emit('gameStarted', gameState);
 
     console.log(`🔥 Juego iniciado correctamente en sala ${roomId}`);
@@ -148,9 +155,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // ➕ Siguiente ola
   @SubscribeMessage('nextWave')
-  handleNextWave(
-    @MessageBody() data: { roomId: string },
-  ) {
+  handleNextWave(@MessageBody() data: { roomId: string }) {
     this.gameService.nextWave(this.server, data.roomId);
   }
 }
