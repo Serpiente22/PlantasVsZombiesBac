@@ -24,19 +24,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly gameService: GameService,
   ) {}
 
-  // 🟢 Cuando un jugador se conecta
+  // 🟢 Conexión establecida
   handleConnection(client: Socket) {
     console.log(`Jugador conectado: ${client.id}`);
     client.emit('connected', client.id);
   }
 
-  // 🔴 Cuando un jugador se desconecta
+  // 🔴 Jugador desconectado
   handleDisconnect(client: Socket) {
     console.log(`Jugador desconectado: ${client.id}`);
     this.gameService.removePlayer(client.id);
   }
 
-  // 🟦 Crear sala (host = plantas)
+  // 🟦 Crear sala (primer jugador = plantas)
   @SubscribeMessage('createRoom')
   handleCreateRoom(
     @ConnectedSocket() client: Socket,
@@ -54,7 +54,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(data.roomId).emit('roomCreated', room);
   }
 
-  // 🟩 Unirse a sala (jugador = zombies)
+  // 🟩 Unirse a sala (segundo jugador = zombies)
   @SubscribeMessage('joinRoom')
   handleJoinRoom(
     @ConnectedSocket() client: Socket,
@@ -66,46 +66,56 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       side: 'zombie',
     });
 
-    if (room) {
-      client.join(data.roomId);
-      console.log(`🧟 ${data.playerName} se unió a ${data.roomId}`);
-
-      this.server.to(data.roomId).emit('roomJoined', room);
-    } else {
+    if (!room) {
       client.emit('errorJoining', 'No se pudo unir a la sala.');
+      return;
+    }
+
+    client.join(data.roomId);
+    console.log(`🧟 ${data.playerName} se unió a ${data.roomId}`);
+
+    this.server.to(data.roomId).emit('roomJoined', room);
+
+    // 🔥 Cuando ya hay 2 jugadores → iniciar automáticamente
+    if (room.status === 'ready') {
+      this.startGame(room.id);
     }
   }
 
-  // 🔥 Iniciar partida
-  @SubscribeMessage('startGame')
-  handleStartGame(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string },
-  ) {
-    console.log(`🎮 Iniciando juego en sala ${data.roomId}`);
+  // 🔥 LÓGICA PARA INICIAR JUEGO
+  private startGame(roomId: string) {
+    console.log(`🎮 Iniciando juego en sala ${roomId}`);
 
-    let game = this.gameService.getGame(data.roomId);
+    let game = this.gameService.getGame(roomId);
+
     if (!game) {
-      game = this.gameService.createGame(data.roomId);
-      console.log(`📌 Partida creada para sala ${data.roomId}`);
+      game = this.gameService.createGame(roomId);
+      console.log(`📌 Partida creada para sala ${roomId}`);
     }
 
-    const room = this.roomsService.getRoom(data.roomId);
+    const room = this.roomsService.getRoom(roomId);
 
-    if (room) {
-      for (const player of room.players) {
-        this.gameService.addPlayerToGame(data.roomId, {
-          id: player.id,
-          name: player.name,
-          role: player.side,
-          resources: 0,
-        });
-      }
+    if (!room) return;
+
+    // Registrar jugadores en el GameService
+    for (const player of room.players) {
+      this.gameService.addPlayerToGame(roomId, {
+        id: player.id,
+        name: player.name,
+        role: player.side,
+        resources: 100,
+      });
     }
 
-    this.gameService.startGame(this.server, data.roomId);
+    // Inicializar tablero y estado
+    this.gameService.startGame(this.server, roomId);
 
-    console.log(`🔥 Juego iniciado en sala ${data.roomId}`);
+    const gameState = this.gameService.getPublicGameState(roomId);
+
+    // 🔥 Enviar estado inicial del juego al frontend
+    this.server.to(roomId).emit('gameStarted', gameState);
+
+    console.log(`🔥 Juego iniciado correctamente en sala ${roomId}`);
   }
 
   // 🌱 Colocar planta
@@ -134,5 +144,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       data.playerId,
       data.zombieData,
     );
+  }
+
+  // ➕ Siguiente ola
+  @SubscribeMessage('nextWave')
+  handleNextWave(
+    @MessageBody() data: { roomId: string },
+  ) {
+    this.gameService.nextWave(this.server, data.roomId);
   }
 }

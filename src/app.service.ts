@@ -3,6 +3,6 @@ import { Injectable } from '@nestjs/common';
 @Injectable()
 export class AppService {
   getHello(): string {
-    return 'pvz1.9!';
+    return 'pvz1.10!';
   }
 }

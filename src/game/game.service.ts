@@ -60,6 +60,7 @@ export class GameService {
     }
   }
 
+  // 🔥 Iniciar juego
   startGame(server: Server, roomId: string) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -67,21 +68,17 @@ export class GameService {
     game.status = 'in-progress';
     game.wave = 1;
 
-    // Inicializar recursos base
+    // Recursos iniciales
     for (const player of game.players) {
       player.resources = player.role === 'plant' ? 50 : 1000;
     }
 
-    // Enviar estado inicial al frontend
-    server.to(roomId).emit('gameStarted', {
-      roomId,
-      wave: game.wave,
-      players: game.players,
-      status: game.status,
-      board: game.board,
-    });
+    const publicState = this.getPublicGameState(roomId);
+
+    server.to(roomId).emit('gameStarted', publicState);
   }
 
+  // 🌱 Colocar planta
   placePlant(server: Server, roomId: string, playerId: string, plantData: any) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -103,13 +100,12 @@ export class GameService {
     };
 
     server.to(roomId).emit('plantPlaced', {
-      playerId,
-      plantData,
       board: game.board,
-      resources: player.resources,
+      players: game.players,
     });
   }
 
+  // 🧟 Colocar zombie
   placeZombie(server: Server, roomId: string, playerId: string, zombieData: any) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -131,13 +127,12 @@ export class GameService {
     };
 
     server.to(roomId).emit('zombiePlaced', {
-      playerId,
-      zombieData,
       board: game.board,
-      resources: player.resources,
+      players: game.players,
     });
   }
 
+  // ☀️ Recolectar sol
   collectSun(server: Server, roomId: string, playerId: string, amount: number) {
     const game = this.getGame(roomId);
     if (!game) return;
@@ -150,18 +145,20 @@ export class GameService {
     server.to(player.id).emit('updateResources', player.resources);
   }
 
+  // 🌊 Siguiente oleada
   nextWave(server: Server, roomId: string) {
     const game = this.getGame(roomId);
     if (!game) return;
 
     game.wave++;
+
     if (game.wave > game.maxWaves) {
       game.status = 'finished';
       server.to(roomId).emit('gameOver', { message: 'Juego terminado' });
       return;
     }
 
-    // Solo zombies obtienen recursos por wave
+    // Zombies ganan recursos por oleada
     for (const player of game.players) {
       if (player.role === 'zombie') {
         player.resources += 500 + game.wave * 100;
@@ -174,10 +171,32 @@ export class GameService {
     });
   }
 
+  // 📌 Obtener partida
   getGame(roomId: string) {
     return this.games.get(roomId);
   }
 
+  // 🟦 Estado público para enviar al frontend
+  getPublicGameState(roomId: string) {
+    const game = this.getGame(roomId);
+    if (!game) return null;
+
+    return {
+      roomId: game.roomId,
+      wave: game.wave,
+      maxWaves: game.maxWaves,
+      status: game.status,
+      players: game.players.map((p) => ({
+        id: p.id,
+        name: p.name,
+        role: p.role,
+        resources: p.resources,
+      })),
+      board: game.board,
+    };
+  }
+
+  // ❌ Jugador desconectado
   removePlayer(clientId: string) {
     const room = this.roomsService.findRoomByPlayer(clientId);
     if (!room) return;
