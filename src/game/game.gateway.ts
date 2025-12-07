@@ -1,3 +1,5 @@
+// src/game/game.gateway.ts
+
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -24,19 +26,21 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly gameService: GameService,
   ) {}
 
-  // 🟢 Conexión establecida
   handleConnection(client: Socket) {
     console.log(`Jugador conectado: ${client.id}`);
     client.emit('connected', client.id);
   }
 
-  // 🔴 Jugador desconectado
   handleDisconnect(client: Socket) {
     console.log(`Jugador desconectado: ${client.id}`);
     this.gameService.removePlayer(client.id);
+
+    const room = this.roomsService.findRoomByPlayer(client.id);
+    if (room) {
+      this.server.to(room.id).emit('roomUpdated', room);
+    }
   }
 
-  // 🟦 Crear sala (primer jugador = plantas)
   @SubscribeMessage('createRoom')
   handleCreateRoom(
     @ConnectedSocket() client: Socket,
@@ -45,16 +49,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.roomsService.createRoom(data.roomId, {
       id: client.id,
       name: data.playerName,
-      side: 'plant',
     });
 
     client.join(data.roomId);
-    console.log(`🌿 Sala creada: ${data.roomId}`);
+
+    this.gameService.createGame(data.roomId);
 
     this.server.to(data.roomId).emit('roomCreated', room);
   }
 
-  // 🟩 Unirse a sala (segundo jugador = zombies)
   @SubscribeMessage('joinRoom')
   handleJoinRoom(
     @ConnectedSocket() client: Socket,
@@ -63,7 +66,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.roomsService.joinRoom(data.roomId, {
       id: client.id,
       name: data.playerName,
-      side: 'zombie',
     });
 
     if (!room) {
@@ -72,90 +74,105 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     client.join(data.roomId);
-    console.log(`🧟 ${data.playerName} se unió a ${data.roomId}`);
+
+    const game = this.gameService.getGame(data.roomId);
+    if (game) {
+      const p = room.players.find((pl) => pl.id === client.id);
+      if (p) {
+        this.gameService.addPlayerToGame(data.roomId, {
+          id: p.id,
+          name: p.name,
+          color: (p as any).color,
+        });
+      }
+    }
 
     this.server.to(data.roomId).emit('roomJoined', room);
+
+    if (room.players.length >= 2) {
+      room.status = 'ready';
+      this.server.to(data.roomId).emit('roomUpdated', room);
+    }
   }
 
-  // 🎮 Handler del BOTÓN "JUGAR"
   @SubscribeMessage('startGame')
   handleStartGame(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string }
+    @MessageBody() data: { roomId: string },
   ) {
-    console.log(`▶️ startGame recibido para sala ${data.roomId}`);
-
-    this.startGame(data.roomId);
-
-    // 🔥 Evento que tu frontend ESPERA
-    this.server.to(data.roomId).emit('gameInitialized');
-  }
-
-  // 🔥 LÓGICA PRIVADA PARA ARRANCAR EL JUEGO
-  private startGame(roomId: string) {
-    console.log(`🎮 Iniciando juego en sala ${roomId}`);
-
-    let game = this.gameService.getGame(roomId);
-
-    if (!game) {
-      game = this.gameService.createGame(roomId);
-      console.log(`📌 Partida creada para sala ${roomId}`);
+    const room = this.roomsService.getRoom(data.roomId);
+    if (!room) {
+      client.emit('error', 'Sala no encontrada');
+      return;
     }
 
-    const room = this.roomsService.getRoom(roomId);
-    if (!room) return;
+    let game = this.gameService.getGame(data.roomId);
+    if (!game) {
+      game = this.gameService.createGame(data.roomId);
+      if (!game) {
+        client.emit('error', 'No se pudo crear la partida');
+        return;
+      }
+    }
 
-    // Registrar jugadores
-    for (const player of room.players) {
-      this.gameService.addPlayerToGame(roomId, {
-        id: player.id,
-        name: player.name,
-        role: player.side,
-        resources: 100,
+    // limpiar y volver a agregar jugadores
+    game.players = [];
+    for (const pl of room.players) {
+      this.gameService.addPlayerToGame(data.roomId, {
+        id: pl.id,
+        name: pl.name,
+        color: (pl as any).color,
       });
     }
 
-    // Iniciar el estado real del game
-    this.gameService.startGame(this.server, roomId);
+    this.gameService.startGame(this.server, data.roomId);
 
-    // Show internal "gameStarted"
-    const gameState = this.gameService.getGame(roomId);
-    this.server.to(roomId).emit('gameStarted', gameState);
+    this.server.to(data.roomId).emit('gameInitialized', { roomId: data.roomId });
 
-    console.log(`🔥 Juego iniciado correctamente en sala ${roomId}`);
+    const state = this.gameService.getPublicGameState(data.roomId);
+    this.server.to(data.roomId).emit('game_state', state);
   }
 
-  // 🌱 Colocar planta
-  @SubscribeMessage('placePlant')
-  handlePlacePlant(
-    @MessageBody()
-    data: { roomId: string; playerId: string; plantData: any },
+  @SubscribeMessage('rollDice')
+  handleRollDice(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
   ) {
-    this.gameService.placePlant(
-      this.server,
+    const value = this.gameService.rollDice(data.roomId);
+    if (value === null) {
+      client.emit('error', 'No se puede tirar el dado');
+      return;
+    }
+
+    this.server.to(data.roomId).emit('diceRolled', { value });
+
+    const state = this.gameService.getPublicGameState(data.roomId);
+    this.server.to(data.roomId).emit('game_state', state);
+  }
+
+  @SubscribeMessage('movePiece')
+  handleMovePiece(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; playerId: string; pieceIndex: number },
+  ) {
+    const moved = this.gameService.movePiece(
       data.roomId,
       data.playerId,
-      data.plantData,
+      data.pieceIndex,
     );
-  }
 
-  // 🧟 Colocar zombie
-  @SubscribeMessage('placeZombie')
-  handlePlaceZombie(
-    @MessageBody()
-    data: { roomId: string; playerId: string; zombieData: any },
-  ) {
-    this.gameService.placeZombie(
-      this.server,
-      data.roomId,
-      data.playerId,
-      data.zombieData,
-    );
-  }
+    if (!moved) {
+      client.emit('error', 'Movimiento inválido');
+      return;
+    }
 
-  // ➕ Siguiente ola
-  @SubscribeMessage('nextWave')
-  handleNextWave(@MessageBody() data: { roomId: string }) {
-    this.gameService.nextWave(this.server, data.roomId);
+    this.gameService.advanceTurn(data.roomId);
+
+    this.server.to(data.roomId).emit('pieceMoved', data);
+
+    const state = this.gameService.getPublicGameState(data.roomId);
+    this.server.to(data.roomId).emit('game_state', state);
+
+    this.server.to(data.roomId).emit('turnChanged', { turnIndex: state?.turnIndex });
   }
 }
