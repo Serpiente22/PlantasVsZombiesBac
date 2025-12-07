@@ -32,17 +32,22 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   handleDisconnect(client: Socket) {
     console.log(`Jugador desconectado: ${client.id}`);
-    this.gameService.removePlayer(client.id);
 
     const room = this.roomsService.findRoomByPlayer(client.id);
+
+    this.gameService.removePlayer(client.id);
+    this.roomsService.removePlayerFromRoom(client.id);
+
     if (room) {
       this.server.to(room.id).emit('roomUpdated', room);
-      // reenviamos estado del juego por si hace falta
       const state = this.gameService.getPublicGameState(room.id);
       if (state) this.server.to(room.id).emit('game_state', state);
     }
   }
 
+  // --------------------------------------------------------
+  // CREAR SALA
+  // --------------------------------------------------------
   @SubscribeMessage('createRoom')
   handleCreateRoom(
     @ConnectedSocket() client: Socket,
@@ -60,6 +65,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(data.roomId).emit('roomCreated', room);
   }
 
+  // --------------------------------------------------------
+  // UNIRSE A SALA
+  // --------------------------------------------------------
   @SubscribeMessage('joinRoom')
   handleJoinRoom(
     @ConnectedSocket() client: Socket,
@@ -71,13 +79,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     if (!room) {
-      client.emit('errorJoining', 'No se pudo unir a la sala (no existe, llena o ya estás dentro).');
+      client.emit(
+        'errorJoining',
+        'No se pudo unir a la sala (no existe, llena o ya estás dentro).',
+      );
       return;
     }
 
     client.join(data.roomId);
 
-    // sincronizar game (si existe) con la room
+    // si ya existe game, agregar al jugador con color sincronizado
     const game = this.gameService.getGame(data.roomId);
     if (game) {
       const p = room.players.find((pl) => pl.id === client.id);
@@ -87,7 +98,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           name: p.name,
           color: (p as any).color,
         });
-        // emitir estado actualizado del juego
+
         const state = this.gameService.getPublicGameState(data.roomId);
         if (state) this.server.to(data.roomId).emit('game_state', state);
       }
@@ -101,6 +112,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  // --------------------------------------------------------
+  // INICIAR PARTIDA
+  // --------------------------------------------------------
   @SubscribeMessage('startGame')
   handleStartGame(
     @ConnectedSocket() client: Socket,
@@ -116,12 +130,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!game) {
       game = this.gameService.createGame(data.roomId);
       if (!game) {
-        client.emit('error', 'No se pudo crear la partida');
+        client.emit('error', 'No se pudo crear el juego.');
         return;
       }
     }
 
-    // limpiar y volver a agregar jugadores (asegura orden consistente)
+    // reconstrucción completa del arreglo players → SIN ERRORES
     game.players = [];
     for (const pl of room.players) {
       this.gameService.addPlayerToGame(data.roomId, {
@@ -131,21 +145,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
 
-    // marcar sala en playing
     room.status = 'playing';
     this.server.to(data.roomId).emit('roomUpdated', room);
 
+    // iniciar juego
     this.gameService.startGame(this.server, data.roomId);
 
     const state = this.gameService.getPublicGameState(data.roomId);
-    this.server.to(data.roomId).emit('gameInitialized', { roomId: data.roomId });
     if (state) {
+      this.server.to(data.roomId).emit('gameInitialized', { roomId: data.roomId });
       this.server.to(data.roomId).emit('game_state', state);
-      // emitir turno real (empieza en 0)
       this.server.to(data.roomId).emit('turnChanged', { turnIndex: state.turnIndex });
     }
   }
 
+  // --------------------------------------------------------
+  // TIRAR DADO
+  // --------------------------------------------------------
   @SubscribeMessage('rollDice')
   handleRollDice(
     @ConnectedSocket() client: Socket,
@@ -157,53 +173,50 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    // sólo el jugador cuyo turno real es puede tirar
     const current = game.players[game.turnIndex];
     if (current?.id !== client.id) {
-      client.emit('error', 'No es tu turno para tirar el dado.');
+      client.emit('error', 'No es tu turno para tirar.');
       return;
     }
 
     const value = this.gameService.rollDice(data.roomId);
     if (value === null) {
-      client.emit('error', 'No se pudo tirar el dado');
+      client.emit('error', 'No se pudo tirar el dado.');
       return;
     }
 
-    // Emitimos dado y estado actualizado (estado real)
     this.server.to(data.roomId).emit('diceRolled', { value });
 
     const state = this.gameService.getPublicGameState(data.roomId);
     if (state) {
-      // emitimos el estado real (turnIndex real)
       this.server.to(data.roomId).emit('game_state', state);
 
-      // **UX**: emitimos también un "turnChanged" visible al siguiente jugador
-      // para que la UI muestre inmediatamente que va el siguiente,
-      // pero NO cambiamos game.turnIndex aquí (el turno real sigue siendo del jugador que lanzó
-      // hasta que mueva su ficha). El avance real ocurre en movePiece().
-      const visibleNext = (state.turnIndex + 1) % (state.players.length || 1);
+      const visibleNext = (state.turnIndex + 1) % state.players.length;
       this.server.to(data.roomId).emit('turnChanged', { turnIndex: visibleNext });
     }
   }
 
+  // --------------------------------------------------------
+  // MOVER FICHA
+  // --------------------------------------------------------
   @SubscribeMessage('movePiece')
   handleMovePiece(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string; playerId: string; pieceIndex: number },
+    @MessageBody()
+    data: { roomId: string; playerId: string; pieceIndex: number },
   ) {
     const game = this.gameService.getGame(data.roomId);
     if (!game || game.status !== 'in-progress') {
-      client.emit('error', 'Partida no iniciada o no válida.');
+      client.emit('error', 'Partida inválida.');
       return;
     }
 
-    // Sólo jugador dueño de la ficha (y además el que tiene el turno real) puede mover
     const current = game.players[game.turnIndex];
     if (!current) {
       client.emit('error', 'Turno inválido.');
       return;
     }
+
     if (current.id !== client.id) {
       client.emit('error', 'No es tu turno para mover.');
       return;
@@ -216,19 +229,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     );
 
     if (!moved) {
-      client.emit('error', 'Movimiento inválido (quizá no salió 6 para sacar ficha o no hay dado).');
+      client.emit(
+        'error',
+        'Movimiento inválido (quizá no salió 6 o no hay dado).',
+      );
       return;
     }
 
-    // Avanzar turno real
     this.gameService.advanceTurn(data.roomId);
 
-    // emitir movimiento y estado actualizado
     this.server.to(data.roomId).emit('pieceMoved', data);
 
     const state = this.gameService.getPublicGameState(data.roomId);
     if (state) {
-      // estado real actualizado
       this.server.to(data.roomId).emit('game_state', state);
       this.server.to(data.roomId).emit('turnChanged', { turnIndex: state.turnIndex });
     }

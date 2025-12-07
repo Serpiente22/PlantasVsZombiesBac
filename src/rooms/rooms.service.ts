@@ -15,12 +15,11 @@ export class RoomsService {
   }
 
   createRoom(roomId: string, creator: { id: string; name: string }): Room {
-    const color = this.colors[0];
+    const color = 'red'; // primer jugador siempre rojo
     const room: Room = {
       id: roomId,
       players: [{ id: creator.id, name: creator.name, color }],
       status: 'waiting',
-      board: {},
     };
     this.rooms.push(room);
     return room;
@@ -31,15 +30,19 @@ export class RoomsService {
     if (!room) return null;
     if (room.players.length >= 4) return null;
 
-    // evitar duplicados
     if (room.players.find((p) => p.id === playerData.id)) return null;
 
-    const usedColors = new Set(room.players.map((p) => p.color));
-    const color = this.colors.find((c) => !usedColors.has(c));
+    const used = new Set(room.players.map(p => p.color));
+    const color = this.colors.find(c => !used.has(c));
     if (!color) return null;
 
-    room.players.push({ id: playerData.id, name: playerData.name, color });
-    if (room.players.length >= 2) room.status = 'ready';
+    room.players.push({
+      id: playerData.id,
+      name: playerData.name,
+      color,
+    });
+
+    room.status = room.players.length >= 2 ? 'ready' : 'waiting';
     return room;
   }
 
@@ -47,7 +50,7 @@ export class RoomsService {
     const room = this.findRoomByPlayer(playerId);
     if (!room) return;
 
-    room.players = room.players.filter((p) => p.id !== playerId);
+    room.players = room.players.filter(p => p.id !== playerId);
 
     if (room.players.length === 0) {
       this.deleteRoom(room.id);
@@ -59,10 +62,10 @@ export class RoomsService {
   }
 
   findRoomByPlayer(playerId: string): Room | undefined {
-    return this.rooms.find((r) => r.players.some((p) => p.id === playerId));
+    return this.rooms.find(r => r.players.some(p => p.id === playerId));
   }
 
   deleteRoom(roomId: string) {
-    this.rooms = this.rooms.filter((r) => r.id !== roomId);
+    this.rooms = this.rooms.filter(r => r.id !== roomId);
   }
 }
