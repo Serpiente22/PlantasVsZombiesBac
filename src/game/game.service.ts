@@ -1,5 +1,4 @@
 // src/game/game.service.ts
-
 import { Injectable } from '@nestjs/common';
 import { Server } from 'socket.io';
 import { RoomsService } from '../rooms/rooms.service';
@@ -13,7 +12,7 @@ interface PlayerState {
 }
 
 interface LudoPlayerState extends PlayerState {
-  pieces: number[];
+  pieces: number[]; // -1 = home, 0..51 pista
 }
 
 interface GameState {
@@ -118,6 +117,7 @@ export class GameService {
       player.pieces[pieceIndex] = (player.pieces[pieceIndex] + dice) % 52;
     }
 
+    // limpiar dice (consumido)
     game.dice = null;
     return true;
   }
@@ -125,7 +125,7 @@ export class GameService {
   advanceTurn(roomId: string) {
     const game = this.getGame(roomId);
     if (!game) return;
-
+    if (game.players.length === 0) return;
     game.turnIndex = (game.turnIndex + 1) % game.players.length;
   }
 
@@ -168,7 +168,6 @@ export class GameService {
     }
   }
 
-  // 🔥 FUNCIÓN QUE FALTABA
   startSquareForColor(color: Color) {
     switch (color) {
       case 'red':
