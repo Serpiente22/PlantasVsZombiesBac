@@ -37,7 +37,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const room = this.roomsService.findRoomByPlayer(client.id);
     if (room) {
       this.server.to(room.id).emit('roomUpdated', room);
-      // también reenviamos estado del juego por si hace falta
+      // reenviamos estado del juego por si hace falta
       const state = this.gameService.getPublicGameState(room.id);
       if (state) this.server.to(room.id).emit('game_state', state);
     }
@@ -131,12 +131,17 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     }
 
+    // marcar sala en playing
+    room.status = 'playing';
+    this.server.to(data.roomId).emit('roomUpdated', room);
+
     this.gameService.startGame(this.server, data.roomId);
 
     const state = this.gameService.getPublicGameState(data.roomId);
     this.server.to(data.roomId).emit('gameInitialized', { roomId: data.roomId });
     if (state) {
       this.server.to(data.roomId).emit('game_state', state);
+      // emitir turno real (empieza en 0)
       this.server.to(data.roomId).emit('turnChanged', { turnIndex: state.turnIndex });
     }
   }
@@ -152,7 +157,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    // sólo el jugador cuyo turno es puede tirar
+    // sólo el jugador cuyo turno real es puede tirar
     const current = game.players[game.turnIndex];
     if (current?.id !== client.id) {
       client.emit('error', 'No es tu turno para tirar el dado.');
@@ -165,14 +170,20 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    // Emitimos dado y estado actualizado
+    // Emitimos dado y estado actualizado (estado real)
     this.server.to(data.roomId).emit('diceRolled', { value });
 
     const state = this.gameService.getPublicGameState(data.roomId);
     if (state) {
+      // emitimos el estado real (turnIndex real)
       this.server.to(data.roomId).emit('game_state', state);
-      // no cambiamos turno aquí — turno cambia al mover pieza (regla estándar)
-      this.server.to(data.roomId).emit('turnChanged', { turnIndex: state.turnIndex });
+
+      // **UX**: emitimos también un "turnChanged" visible al siguiente jugador
+      // para que la UI muestre inmediatamente que va el siguiente,
+      // pero NO cambiamos game.turnIndex aquí (el turno real sigue siendo del jugador que lanzó
+      // hasta que mueva su ficha). El avance real ocurre en movePiece().
+      const visibleNext = (state.turnIndex + 1) % (state.players.length || 1);
+      this.server.to(data.roomId).emit('turnChanged', { turnIndex: visibleNext });
     }
   }
 
@@ -187,7 +198,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    // Sólo jugador dueño de la ficha (y además el que tiene el turno) puede mover
+    // Sólo jugador dueño de la ficha (y además el que tiene el turno real) puede mover
     const current = game.players[game.turnIndex];
     if (!current) {
       client.emit('error', 'Turno inválido.');
@@ -209,7 +220,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    // Avanzar turno sólo si la regla local lo requiere (en este backend siempre avanza)
+    // Avanzar turno real
     this.gameService.advanceTurn(data.roomId);
 
     // emitir movimiento y estado actualizado
@@ -217,6 +228,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const state = this.gameService.getPublicGameState(data.roomId);
     if (state) {
+      // estado real actualizado
       this.server.to(data.roomId).emit('game_state', state);
       this.server.to(data.roomId).emit('turnChanged', { turnIndex: state.turnIndex });
     }
