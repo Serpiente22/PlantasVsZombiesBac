@@ -33,6 +33,8 @@ export class GameService {
     const room = this.rooms.getRoom(roomId);
     if (!room) return;
 
+    if (this.games.has(roomId)) return this.games.get(roomId); // evita recrear
+
     const game: GameState = {
       roomId,
       players: [],
@@ -50,8 +52,7 @@ export class GameService {
     const game = this.games.get(roomId);
     if (!game) return;
 
-    if (!data.color) return; // <-- evita errores
-
+    if (!data.color) return;
     if (game.players.find(p => p.id === data.id)) return;
 
     game.players.push({
@@ -67,7 +68,6 @@ export class GameService {
     const room = this.rooms.getRoom(roomId);
     if (!room) return;
 
-    // Sync players
     game.players = room.players.map(p => ({
       id: p.id,
       name: p.name,
@@ -97,6 +97,7 @@ export class GameService {
 
     const player = game.players.find(p => p.id === playerId);
     if (!player) return false;
+    if (pieceIndex < 0 || pieceIndex > 3) return false;
 
     const dice = game.dice ?? 0;
     if (dice <= 0) return false;
@@ -148,7 +149,6 @@ export class GameService {
   }
 
   removePlayer(id: string) {
-    const room = this.rooms.findRoomByPlayer(id);
     this.rooms.removePlayerFromRoom(id);
 
     for (const [roomId, game] of this.games.entries()) {

@@ -15,7 +15,7 @@ export class RoomsService {
   }
 
   createRoom(roomId: string, creator: { id: string; name: string }): Room {
-    const color = 'red'; // primer jugador siempre rojo
+    const color: Color = 'red';
     const room: Room = {
       id: roomId,
       players: [{ id: creator.id, name: creator.name, color }],
@@ -29,19 +29,13 @@ export class RoomsService {
     const room = this.getRoom(roomId);
     if (!room) return null;
     if (room.players.length >= 4) return null;
-
     if (room.players.find((p) => p.id === playerData.id)) return null;
 
     const used = new Set(room.players.map(p => p.color));
-    const color = this.colors.find(c => !used.has(c));
-    if (!color) return null;
+    let color = this.colors.find(c => !used.has(c));
+    if (!color) color = this.colors[Math.floor(Math.random() * this.colors.length)];
 
-    room.players.push({
-      id: playerData.id,
-      name: playerData.name,
-      color,
-    });
-
+    room.players.push({ id: playerData.id, name: playerData.name, color });
     room.status = room.players.length >= 2 ? 'ready' : 'waiting';
     return room;
   }

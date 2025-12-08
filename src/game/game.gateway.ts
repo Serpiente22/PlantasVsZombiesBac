@@ -45,9 +45,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  // --------------------------------------------------------
-  // CREAR SALA
-  // --------------------------------------------------------
   @SubscribeMessage('createRoom')
   handleCreateRoom(
     @ConnectedSocket() client: Socket,
@@ -59,15 +56,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
 
     client.join(data.roomId);
-
     this.gameService.createGame(data.roomId);
 
     this.server.to(data.roomId).emit('roomCreated', room);
   }
 
-  // --------------------------------------------------------
-  // UNIRSE A SALA
-  // --------------------------------------------------------
   @SubscribeMessage('joinRoom')
   handleJoinRoom(
     @ConnectedSocket() client: Socket,
@@ -88,7 +81,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     client.join(data.roomId);
 
-    // si ya existe game, agregar al jugador con color sincronizado
+    // Agregar jugador al game si ya existe
     const game = this.gameService.getGame(data.roomId);
     if (game) {
       const p = room.players.find((pl) => pl.id === client.id);
@@ -96,7 +89,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.gameService.addPlayerToGame(data.roomId, {
           id: p.id,
           name: p.name,
-          color: (p as any).color,
+          color: p.color,
         });
 
         const state = this.gameService.getPublicGameState(data.roomId);
@@ -112,9 +105,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  // --------------------------------------------------------
-  // INICIAR PARTIDA
-  // --------------------------------------------------------
   @SubscribeMessage('startGame')
   handleStartGame(
     @ConnectedSocket() client: Socket,
@@ -135,20 +125,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    // reconstrucción completa del arreglo players → SIN ERRORES
+    // Reconstruir jugadores
     game.players = [];
     for (const pl of room.players) {
       this.gameService.addPlayerToGame(data.roomId, {
         id: pl.id,
         name: pl.name,
-        color: (pl as any).color,
+        color: pl.color,
       });
     }
 
     room.status = 'playing';
     this.server.to(data.roomId).emit('roomUpdated', room);
 
-    // iniciar juego
     this.gameService.startGame(this.server, data.roomId);
 
     const state = this.gameService.getPublicGameState(data.roomId);
@@ -159,9 +148,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  // --------------------------------------------------------
-  // TIRAR DADO
-  // --------------------------------------------------------
   @SubscribeMessage('rollDice')
   handleRollDice(
     @ConnectedSocket() client: Socket,
@@ -190,15 +176,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const state = this.gameService.getPublicGameState(data.roomId);
     if (state) {
       this.server.to(data.roomId).emit('game_state', state);
-
-      const visibleNext = (state.turnIndex + 1) % state.players.length;
-      this.server.to(data.roomId).emit('turnChanged', { turnIndex: visibleNext });
+      this.server.to(data.roomId).emit('turnChanged', { turnIndex: state.turnIndex });
     }
   }
 
-  // --------------------------------------------------------
-  // MOVER FICHA
-  // --------------------------------------------------------
   @SubscribeMessage('movePiece')
   handleMovePiece(
     @ConnectedSocket() client: Socket,
@@ -229,10 +210,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     );
 
     if (!moved) {
-      client.emit(
-        'error',
-        'Movimiento inválido (quizá no salió 6 o no hay dado).',
-      );
+      client.emit('error', 'Movimiento inválido.');
       return;
     }
 
