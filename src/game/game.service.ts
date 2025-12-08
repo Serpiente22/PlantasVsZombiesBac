@@ -12,8 +12,6 @@ interface PlayerState {
 }
 
 interface LudoPlayerState extends PlayerState {
-  // -1: Casa. 0-51: Camino principal. 
-  // 100+: Recta final verde. 200+: Amarilla. 300+: Azul. 400+: Roja.
   pieces: number[]; 
 }
 
@@ -33,7 +31,6 @@ export class GameService {
 
   constructor(private readonly rooms: RoomsService) {}
 
-  // Configuración del tablero basada en la imagen (sentido horario)
   private readonly boardConfig = {
     green:  { start: 1,  turn: 51, finalPathStart: 100 },
     yellow: { start: 14, turn: 12, finalPathStart: 200 },
@@ -55,7 +52,6 @@ export class GameService {
       maxPlayers,
       winners: [],
     };
-
     this.games.set(roomId, game);
     return game;
   }
@@ -66,11 +62,7 @@ export class GameService {
     if (!data.color) return;
     const existing = game.players.find((p) => p.id === data.id);
     if (existing) return;
-
-    game.players.push({
-      ...data,
-      pieces: [-1, -1, -1, -1],
-    });
+    game.players.push({ ...data, pieces: [-1, -1, -1, -1] });
   }
 
   startGame(server: Server, roomId: string) {
@@ -79,15 +71,9 @@ export class GameService {
     const room = this.rooms.getRoom(roomId);
     if (!room) return;
 
-    // Ordenar: Verde->Amarillo->Azul->Rojo
     const colorOrder: Color[] = ['green', 'yellow', 'blue', 'red'];
     game.players = room.players
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        color: p.color,
-        pieces: [-1, -1, -1, -1],
-      }))
+      .map((p) => ({ ...p, pieces: [-1, -1, -1, -1] }))
       .sort((a, b) => colorOrder.indexOf(a.color) - colorOrder.indexOf(b.color));
 
     game.status = 'in-progress';
@@ -101,14 +87,15 @@ export class GameService {
   rollDice(roomId: string): number | null {
     const game = this.games.get(roomId);
     if (!game || game.status !== 'in-progress') return null;
-    
     const value = Math.floor(Math.random() * 6) + 1;
     game.dice = value;
     return value;
   }
 
   canMove(pos: number, dice: number, color: Color): boolean {
-    if (pos === -1) return dice === 6;
+    // --- CAMBIO REQUERIDO: Salir con 1 o 6 ---
+    if (pos === -1) return dice === 1 || dice === 6;
+
     const config = this.boardConfig[color];
 
     if (pos >= 100) {
@@ -131,11 +118,51 @@ export class GameService {
     if (!game || game.dice === null) return false;
     const player = game.players[game.turnIndex];
     if (!player) return false;
-
     return player.pieces.some(pos => this.canMove(pos, game.dice!, player.color));
   }
 
-  // MODIFICADO: Devuelve objeto con info de si comió a alguien
+  // --- LÓGICA DE INTELIGENCIA DEL BOT ---
+  getAutomatedBotMove(roomId: string): number {
+    const game = this.games.get(roomId);
+    if (!game || game.dice === null) return -1;
+    const player = game.players[game.turnIndex];
+    
+    // Obtener todos los índices de fichas que se pueden mover
+    const validMoves = player.pieces
+        .map((pos, index) => ({ index, pos, canMove: this.canMove(pos, game.dice!, player.color) }))
+        .filter(m => m.canMove);
+
+    if (validMoves.length === 0) return -1;
+
+    // HEURÍSTICA SIMPLE:
+    // 1. Si puedo comer, como.
+    // 2. Si puedo salir de casa, salgo.
+    // 3. Si no, avanzo la que esté más lejos.
+
+    // Intentar encontrar un movimiento que coma a alguien
+    for (const move of validMoves) {
+        // Simular movimiento
+        let futurePos = -1; 
+        const config = this.boardConfig[player.color];
+        if (move.pos === -1) futurePos = config.start;
+        else futurePos = (move.pos + game.dice!) % 52; // (Simplificado para cálculo rápido)
+
+        // Verificar si mata (solo en camino principal)
+        if (futurePos >= 0 && futurePos <= 51) {
+            const kills = game.players.some(p => p.id !== player.id && p.pieces.includes(futurePos));
+            if (kills) return move.index; // Prioridad MÁXIMA: MATAR
+        }
+    }
+
+    // Intentar salir de casa (Prioridad 2)
+    const moveOut = validMoves.find(m => m.pos === -1);
+    if (moveOut) return moveOut.index;
+
+    // Mover la que más haya avanzado (para llegar a meta rápido)
+    // O mover aleatoriamente entre las válidas
+    return validMoves[Math.floor(Math.random() * validMoves.length)].index;
+  }
+
   movePiece(roomId: string, playerId: string, pieceIndex: number): { success: boolean; eatenPlayerName?: string | null } {
     const game = this.games.get(roomId);
     if (!game) return { success: false };
@@ -155,7 +182,6 @@ export class GameService {
     let newPos = currentPos;
     const config = this.boardConfig[player.color];
 
-    // Calcular nueva posición
     if (currentPos === -1) {
       newPos = config.start;
     } else if (currentPos >= 100) {
@@ -175,22 +201,14 @@ export class GameService {
     player.pieces[pieceIndex] = newPos;
     game.dice = null;
 
-    // --- LÓGICA DE COMER (KILL) ---
     let eatenPlayerName: string | null = null;
 
-    // Solo se come en el camino principal (0-51)
     if (newPos >= 0 && newPos <= 51) {
-        // Zonas seguras opcionales (ej: salidas). 
-        // Si quieres zonas seguras, descomenta y ajusta:
-        // const safeZones = [0, 8, 13, 21, 26, 34, 39, 47];
-        // if (!safeZones.includes(newPos)) { ... }
-
         game.players.forEach(p => {
-            if (p.id !== player.id) { // No comerse a sí mismo
+            if (p.id !== player.id) {
                 p.pieces.forEach((enemyPos, idx) => {
                     if (enemyPos === newPos) {
-                        // ¡COMIDO!
-                        p.pieces[idx] = -1; // Mandar a casa
+                        p.pieces[idx] = -1; 
                         eatenPlayerName = p.name;
                     }
                 });
