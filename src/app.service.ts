@@ -3,6 +3,6 @@ import { Injectable } from '@nestjs/common';
 @Injectable()
 export class AppService {
   getHello(): string {
-    return 'ludo 0.8.1!';
+    return 'ludo 0.9!';
   }
 }

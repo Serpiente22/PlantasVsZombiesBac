@@ -24,7 +24,7 @@ interface GameState {
   dice: number | null;
   status: 'waiting' | 'in-progress' | 'finished';
   maxPlayers: number;
-  winners: string[]; // Para guardar quién ya ganó
+  winners: string[];
 }
 
 @Injectable()
@@ -35,10 +35,10 @@ export class GameService {
 
   // Configuración del tablero basada en la imagen (sentido horario)
   private readonly boardConfig = {
-    green:  { start: 1,  turn: 51, finalPathStart: 100 }, // Top-Left
-    yellow: { start: 14, turn: 12, finalPathStart: 200 }, // Top-Right
-    blue:   { start: 27, turn: 25, finalPathStart: 300 }, // Bottom-Right
-    red:    { start: 40, turn: 38, finalPathStart: 400 }, // Bottom-Left
+    green:  { start: 1,  turn: 51, finalPathStart: 100 },
+    yellow: { start: 14, turn: 12, finalPathStart: 200 },
+    blue:   { start: 27, turn: 25, finalPathStart: 300 },
+    red:    { start: 40, turn: 38, finalPathStart: 400 },
   };
 
   createGame(roomId: string, maxPlayers = 4): GameState | undefined {
@@ -79,7 +79,7 @@ export class GameService {
     const room = this.rooms.getRoom(roomId);
     if (!room) return;
 
-    // Ordenar jugadores para que los turnos sigan el sentido del reloj (Verde->Amarillo->Azul->Rojo)
+    // Ordenar: Verde->Amarillo->Azul->Rojo
     const colorOrder: Color[] = ['green', 'yellow', 'blue', 'red'];
     game.players = room.players
       .map((p) => ({
@@ -103,37 +103,27 @@ export class GameService {
     if (!game || game.status !== 'in-progress') return null;
     
     const value = Math.floor(Math.random() * 6) + 1;
-    // const value = 6; // Descomentar para probar sacar fichas siempre
     game.dice = value;
     return value;
   }
 
-  // Verifica si el movimiento es posible sin realizarlo
   canMove(pos: number, dice: number, color: Color): boolean {
-    if (pos === -1) return dice === 6; // Salir de casa
-
+    if (pos === -1) return dice === 6;
     const config = this.boardConfig[color];
 
-    // Lógica si ya está en la recta final
     if (pos >= 100) {
-      const stepsToGoal = (config.finalPathStart + 5) - pos; // La meta es start + 5
+      const stepsToGoal = (config.finalPathStart + 5) - pos;
       return dice <= stepsToGoal;
     }
 
-    // Lógica en el camino principal
-    // Calculamos cuántos pasos faltan para llegar al punto de giro
     let distanceToTurn = config.turn - pos;
-    if (distanceToTurn < 0) distanceToTurn += 52; // Ajuste si cruza el índice 0
+    if (distanceToTurn < 0) distanceToTurn += 52;
 
     if (dice > distanceToTurn) {
-      // Intenta entrar a la recta final
       const stepsIntoFinal = dice - distanceToTurn - 1;
-      // Solo puede entrar si no se pasa de la meta (5 pasos dentro)
       return stepsIntoFinal <= 5; 
-    } else {
-      // Sigue en el camino principal
-      return true;
     }
+    return true;
   }
 
   hasAnyValidMove(roomId: string): boolean {
@@ -145,60 +135,63 @@ export class GameService {
     return player.pieces.some(pos => this.canMove(pos, game.dice!, player.color));
   }
 
-  movePiece(roomId: string, playerId: string, pieceIndex: number) {
+  // MODIFICADO: Devuelve objeto con info de si comió a alguien
+  movePiece(roomId: string, playerId: string, pieceIndex: number): { success: boolean; eatenPlayerName?: string | null } {
     const game = this.games.get(roomId);
-    if (!game) return false;
+    if (!game) return { success: false };
+    
     const player = game.players.find((p) => p.id === playerId);
-    if (!player) return false;
+    if (!player) return { success: false };
     
     const dice = game.dice ?? 0;
-    if (dice <= 0) return false;
+    if (dice <= 0) return { success: false };
 
     const currentPos = player.pieces[pieceIndex];
 
     if (!this.canMove(currentPos, dice, player.color)) {
-        return false;
+        return { success: false };
     }
 
-    // --- Aplicar el movimiento ---
     let newPos = currentPos;
     const config = this.boardConfig[player.color];
 
+    // Calcular nueva posición
     if (currentPos === -1) {
-      // Salir de casa
       newPos = config.start;
     } else if (currentPos >= 100) {
-      // Moverse dentro de la recta final
       newPos = currentPos + dice;
     } else {
-      // Moverse en el camino principal
       let distanceToTurn = config.turn - currentPos;
       if (distanceToTurn < 0) distanceToTurn += 52;
 
       if (dice > distanceToTurn) {
-        // Entrar a la recta final
         const stepsIntoFinal = dice - distanceToTurn - 1;
         newPos = config.finalPathStart + stepsIntoFinal;
       } else {
-        // Seguir en el camino principal (circular)
         newPos = (currentPos + dice) % 52;
       }
     }
     
-    // Actualizar posición
     player.pieces[pieceIndex] = newPos;
     game.dice = null;
 
-    // Comer fichas (Opcional - Implementación básica)
-    // Si cae en el camino principal (0-51), verificar si hay fichas de OTRO color
+    // --- LÓGICA DE COMER (KILL) ---
+    let eatenPlayerName: string | null = null;
+
+    // Solo se come en el camino principal (0-51)
     if (newPos >= 0 && newPos <= 51) {
+        // Zonas seguras opcionales (ej: salidas). 
+        // Si quieres zonas seguras, descomenta y ajusta:
+        // const safeZones = [0, 8, 13, 21, 26, 34, 39, 47];
+        // if (!safeZones.includes(newPos)) { ... }
+
         game.players.forEach(p => {
             if (p.id !== player.id) { // No comerse a sí mismo
                 p.pieces.forEach((enemyPos, idx) => {
                     if (enemyPos === newPos) {
-                        // Comer: devolver a casa
-                        p.pieces[idx] = -1;
-                        // Aquí podrías dar un turno extra al que comió si quieres
+                        // ¡COMIDO!
+                        p.pieces[idx] = -1; // Mandar a casa
+                        eatenPlayerName = p.name;
                     }
                 });
             }
@@ -206,19 +199,17 @@ export class GameService {
     }
 
     this.checkWinCondition(game, player);
-    return true;
+    
+    return { success: true, eatenPlayerName };
   }
 
   checkWinCondition(game: GameState, player: LudoPlayerState) {
     const config = this.boardConfig[player.color];
-    const goalPos = config.finalPathStart + 5; // La posición 6 de la recta final es la meta
-
-    // Verificar si las 4 fichas están en la meta
+    const goalPos = config.finalPathStart + 5;
     const allInGoal = player.pieces.every(pos => pos === goalPos);
 
     if (allInGoal && !game.winners.includes(player.id)) {
         game.winners.push(player.id);
-        // Si solo queda 1 jugador, el juego termina
         if (game.winners.length === game.players.length - 1 && game.players.length > 1) {
             game.status = 'finished';
         }
@@ -230,8 +221,6 @@ export class GameService {
     if (!game || game.status === 'finished') return;
 
     game.dice = null;
-    
-    // Buscar el siguiente jugador que no haya ganado
     let nextIndex = game.turnIndex;
     for (let i = 0; i < game.players.length; i++) {
         nextIndex = (nextIndex + 1) % game.players.length;
@@ -268,9 +257,6 @@ export class GameService {
            const index = game.players.findIndex(p => p.id === id);
            if (index !== -1) game.players.splice(index, 1);
       }
-      // Si el juego está en progreso, es complejo sacarlo sin romper los turnos.
-      // Por ahora, si se desconecta en partida, su "fantasma" sigue ahí pasando turno.
-      
       if (game.players.length === 0) this.games.delete(roomId);
     }
   }
