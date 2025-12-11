@@ -93,19 +93,14 @@ export class GameService {
   }
 
   canMove(pos: number, dice: number, color: Color): boolean {
-    // --- CAMBIO REQUERIDO: Salir con 1 o 6 ---
     if (pos === -1) return dice === 1 || dice === 6;
-
     const config = this.boardConfig[color];
-
     if (pos >= 100) {
       const stepsToGoal = (config.finalPathStart + 5) - pos;
       return dice <= stepsToGoal;
     }
-
     let distanceToTurn = config.turn - pos;
     if (distanceToTurn < 0) distanceToTurn += 52;
-
     if (dice > distanceToTurn) {
       const stepsIntoFinal = dice - distanceToTurn - 1;
       return stepsIntoFinal <= 5; 
@@ -121,45 +116,32 @@ export class GameService {
     return player.pieces.some(pos => this.canMove(pos, game.dice!, player.color));
   }
 
-  // --- LÓGICA DE INTELIGENCIA DEL BOT ---
   getAutomatedBotMove(roomId: string): number {
     const game = this.games.get(roomId);
     if (!game || game.dice === null) return -1;
     const player = game.players[game.turnIndex];
     
-    // Obtener todos los índices de fichas que se pueden mover
     const validMoves = player.pieces
         .map((pos, index) => ({ index, pos, canMove: this.canMove(pos, game.dice!, player.color) }))
         .filter(m => m.canMove);
 
     if (validMoves.length === 0) return -1;
 
-    // HEURÍSTICA SIMPLE:
-    // 1. Si puedo comer, como.
-    // 2. Si puedo salir de casa, salgo.
-    // 3. Si no, avanzo la que esté más lejos.
-
-    // Intentar encontrar un movimiento que coma a alguien
     for (const move of validMoves) {
-        // Simular movimiento
         let futurePos = -1; 
         const config = this.boardConfig[player.color];
         if (move.pos === -1) futurePos = config.start;
-        else futurePos = (move.pos + game.dice!) % 52; // (Simplificado para cálculo rápido)
+        else futurePos = (move.pos + game.dice!) % 52; 
 
-        // Verificar si mata (solo en camino principal)
         if (futurePos >= 0 && futurePos <= 51) {
             const kills = game.players.some(p => p.id !== player.id && p.pieces.includes(futurePos));
-            if (kills) return move.index; // Prioridad MÁXIMA: MATAR
+            if (kills) return move.index; 
         }
     }
 
-    // Intentar salir de casa (Prioridad 2)
     const moveOut = validMoves.find(m => m.pos === -1);
     if (moveOut) return moveOut.index;
 
-    // Mover la que más haya avanzado (para llegar a meta rápido)
-    // O mover aleatoriamente entre las válidas
     return validMoves[Math.floor(Math.random() * validMoves.length)].index;
   }
 
@@ -221,6 +203,36 @@ export class GameService {
     return { success: true, eatenPlayerName };
   }
 
+  // --- NUEVA FUNCIÓN: RENDICIÓN ---
+  surrender(roomId: string, playerId: string): boolean {
+      const game = this.games.get(roomId);
+      if (!game) return false;
+
+      const player = game.players.find(p => p.id === playerId);
+      if (!player) return false;
+
+      // Retirar todas sus fichas del tablero (valor especial -99)
+      player.pieces = [-99, -99, -99, -99]; 
+      
+      // Si era su turno, pasarlo
+      if (game.players[game.turnIndex].id === playerId) {
+          this.advanceTurn(roomId);
+      }
+
+      // Opcional: Marcarlo como "perdedor" o eliminarlo de la lista de activos
+      // Para simplificar, lo dejamos con fichas ocultas y el turno simplemente lo saltará
+      // si advanceTurn verifica fichas activas (o bots).
+      
+      // Verificar si quedan suficientes jugadores para seguir
+      const activePlayers = game.players.filter(p => !p.pieces.every(pos => pos === -99));
+      if (activePlayers.length < 2 && game.players.length > 1) {
+          game.status = 'finished'; // Terminar si todos se rinden menos uno
+          game.winners.push(activePlayers[0]?.id); // El último en pie gana
+      }
+
+      return true;
+  }
+
   checkWinCondition(game: GameState, player: LudoPlayerState) {
     const config = this.boardConfig[player.color];
     const goalPos = config.finalPathStart + 5;
@@ -240,14 +252,20 @@ export class GameService {
 
     game.dice = null;
     let nextIndex = game.turnIndex;
-    for (let i = 0; i < game.players.length; i++) {
+    let attempts = 0;
+    
+    // Buscar siguiente jugador que no haya ganado Y no se haya rendido (-99)
+    do {
         nextIndex = (nextIndex + 1) % game.players.length;
-        const nextPlayerId = game.players[nextIndex].id;
-        if (!game.winners.includes(nextPlayerId)) {
+        const nextPlayer = game.players[nextIndex];
+        const hasSurrendered = nextPlayer.pieces.every(p => p === -99);
+        
+        if (!game.winners.includes(nextPlayer.id) && !hasSurrendered) {
             game.turnIndex = nextIndex;
             break;
         }
-    }
+        attempts++;
+    } while (attempts < game.players.length);
   }
 
   getPublicGameState(roomId: string) {
