@@ -13,9 +13,8 @@ interface PlayerState {
 
 interface LudoPlayerState extends PlayerState {
   pieces: number[];
-  // ESTADO NUEVO PARA PODERES
-  multiplier: number; // 1 normal, 2 si tiene el poder x2
-  bomb: { pieceIndex: number; timer: number } | null; // Si tiene bomba activa
+  multiplier: number; 
+  bomb: { pieceIndex: number; timer: number } | null;
 }
 
 interface GameState {
@@ -26,9 +25,8 @@ interface GameState {
   status: 'waiting' | 'in-progress' | 'finished';
   maxPlayers: number;
   winners: string[];
-  // NUEVO
-  totalTurns: number; // Contador global de turnos para spawnear poderes
-  powerUps: Map<number, string>; // Posición -> Tipo ('mystery')
+  totalTurns: number;
+  powerUps: Map<number, string>;
 }
 
 @Injectable()
@@ -102,28 +100,28 @@ export class GameService {
     if (!game || game.status !== 'in-progress') return null;
     
     const player = game.players[game.turnIndex];
-    
     let value = Math.floor(Math.random() * 6) + 1;
     
-    // PODER: Multiplicador x2
     if (player.multiplier > 1) {
         value *= player.multiplier;
-        player.multiplier = 1; // Consumir el poder
+        player.multiplier = 1; 
     }
 
     game.dice = value;
     return value;
   }
 
-  // --- SPAWN DE PODERES ---
+  // --- SPAWN DE PODERES MEJORADO ---
   spawnPowerUps(game: GameState) {
-      // Generar 2 poderes en casillas aleatorias del camino principal (0-51)
+      // 1. Limpiar poderes viejos para que no se acumulen
+      game.powerUps.clear();
+
+      // 2. Generar 3 nuevos
       let added = 0;
       let attempts = 0;
-      while (added < 2 && attempts < 20) {
+      while (added < 3 && attempts < 30) {
           const pos = Math.floor(Math.random() * 52);
           
-          // Verificar que no haya fichas ni otro poder ahí
           const isOccupied = game.players.some(p => p.pieces.includes(pos));
           const hasPower = game.powerUps.has(pos);
           
@@ -135,30 +133,23 @@ export class GameService {
       }
   }
 
-  // --- APLICAR EFECTO DEL PODER ---
   applyPowerUp(game: GameState, player: LudoPlayerState, pieceIndex: number): { type: string, msg: string } | null {
-      const powers = ['BOOST', 'DOUBLE_ROLL', 'X2_NEXT', 'FREE_EXIT', 'BOMB'];
-      // Probabilidades: Bomb es raro, Boost es común
       const random = Math.random();
       let type = '';
 
-      if (random < 0.3) type = 'BOOST'; // 30% Avanzar 4
-      else if (random < 0.5) type = 'X2_NEXT'; // 20% x2
-      else if (random < 0.7) type = 'DOUBLE_ROLL'; // 20% Repetir turno
-      else if (random < 0.85) type = 'FREE_EXIT'; // 15% Sacar ficha
-      else type = 'BOMB'; // 15% Bomba
+      if (random < 0.25) type = 'BOOST'; 
+      else if (random < 0.45) type = 'X2_NEXT'; 
+      else if (random < 0.65) type = 'DOUBLE_ROLL'; 
+      else if (random < 0.85) type = 'FREE_EXIT'; 
+      else type = 'BOMB'; 
 
       let msg = '';
 
       switch (type) {
           case 'BOOST':
-              // Avanzar 4 casillas extra (recursivo simple, sin comer en el salto)
-              // Calculamos la nueva posición manual para no complicar movePiece
               const currentPos = player.pieces[pieceIndex];
-              let newPos = (currentPos + 4) % 52;
-              if (currentPos < 52 && newPos < currentPos) { /* Dio la vuelta */ } 
-              // Simplificación: mover 4 pasos si está en main track
               if (currentPos >= 0 && currentPos <= 51) {
+                  let newPos = (currentPos + 4) % 52;
                   player.pieces[pieceIndex] = newPos;
                   msg = '🚀 ¡Turbo! Avanzas 4 casillas.';
               } else {
@@ -166,8 +157,7 @@ export class GameService {
               }
               break;
           case 'DOUBLE_ROLL':
-              game.dice = null; // Resetear dado para permitir tirar de nuevo
-              // No avanzamos turno en el Gateway si sale esto
+              game.dice = null; // IMPORTANTE: Resetear para permitir tirar de nuevo
               msg = '🎲 ¡Tira otra vez!';
               break;
           case 'X2_NEXT':
@@ -185,56 +175,59 @@ export class GameService {
               }
               break;
           case 'BOMB':
+              // Se le da valor 3. Explotará al FINALIZAR su 3er turno (incluyendo este).
               player.bomb = { pieceIndex, timer: 3 };
-              msg = '💣 ¡TIENES LA BOMBA! Explota en 3 turnos.';
+              msg = '💣 ¡TIENES LA BOMBA! Explota al finalizar tu 3er turno.';
               break;
       }
 
       return { type, msg };
   }
 
-  // --- LÓGICA DE EXPLOSIÓN ---
-  checkBombExplosion(game: GameState, server: Server) {
-      game.players.forEach(p => {
-          if (p.bomb) {
-              p.bomb.timer--;
-              if (p.bomb.timer <= 0) {
-                  // ¡BOOM!
-                  const bombPos = p.pieces[p.bomb.pieceIndex];
-                  const victims: string[] = [];
+  // --- LÓGICA DE EXPLOSIÓN CONTROLADA ---
+  handleTurnEnd(game: GameState, playerId: string, server: Server) {
+      const p = game.players.find(pl => pl.id === playerId);
+      if (!p || !p.bomb) return;
 
-                  // Si la ficha ya llegó a meta o está en casa, la bomba se desactiva sola (suerte)
-                  if (bombPos !== -1 && bombPos < 100) {
-                      // Matar al portador
-                      p.pieces[p.bomb.pieceIndex] = -1;
-                      victims.push(p.name);
+      // Restar contador SOLO al jugador que terminó turno
+      p.bomb.timer--;
 
-                      // Matar a los de alrededor (Radio 2 en el array circular 0-51)
-                      game.players.forEach(other => {
-                          other.pieces.forEach((pos, idx) => {
-                              if (pos >= 0 && pos <= 51) {
-                                  // Calcular distancia circular
-                                  let dist = Math.abs(pos - bombPos);
-                                  if (dist > 26) dist = 52 - dist; // Ajuste vuelta al mundo
+      const currentPos = p.pieces[p.bomb.pieceIndex];
+      // Si la ficha ya no está en juego o llegó a meta, quitar bomba
+      if (currentPos === -1 || currentPos >= 100) {
+          p.bomb = null;
+          return;
+      }
 
-                                  if (dist <= 2) { // Radio 2
-                                      other.pieces[idx] = -1;
-                                      if (!victims.includes(other.name)) victims.push(other.name);
-                                  }
-                              }
-                          });
-                      });
-                      
-                      server.to(game.roomId).emit('explosion', { pos: bombPos, victims });
+      if (p.bomb.timer <= 0) {
+          // ¡BOOM!
+          const bombPos = currentPos;
+          const victims: string[] = [];
+
+          // 1. Muere el portador
+          p.pieces[p.bomb.pieceIndex] = -1;
+          victims.push(p.name);
+
+          // 2. Mueren los de alrededor (Radio 2)
+          game.players.forEach(other => {
+              other.pieces.forEach((pos, idx) => {
+                  if (pos >= 0 && pos <= 51) {
+                      let dist = Math.abs(pos - bombPos);
+                      if (dist > 26) dist = 52 - dist;
+
+                      if (dist <= 2) {
+                          other.pieces[idx] = -1;
+                          if (!victims.includes(other.name)) victims.push(other.name);
+                      }
                   }
-                  
-                  p.bomb = null; // Quitar bomba
-              }
-          }
-      });
+              });
+          });
+          
+          server.to(game.roomId).emit('explosion', { pos: bombPos, victims });
+          p.bomb = null; 
+      }
   }
 
-  // ... (canMove, hasAnyValidMove, getAutomatedBotMove se mantienen igual)
   canMove(pos: number, dice: number, color: Color): boolean {
     if (pos === -1) return dice === 1 || dice === 6;
     const config = this.boardConfig[color];
@@ -260,7 +253,6 @@ export class GameService {
   }
 
   getAutomatedBotMove(roomId: string): number {
-    // ... (Tu lógica de bot existente aquí, sin cambios)
     const game = this.games.get(roomId);
     if (!game || game.dice === null) return -1;
     const player = game.players[game.turnIndex];
@@ -268,13 +260,14 @@ export class GameService {
         .map((pos, index) => ({ index, pos, canMove: this.canMove(pos, game.dice!, player.color) }))
         .filter(m => m.canMove);
     if (validMoves.length === 0) return -1;
+    
     for (const move of validMoves) {
         let futurePos = -1; 
         const config = this.boardConfig[player.color];
         if (move.pos === -1) futurePos = config.start;
         else futurePos = (move.pos + game.dice!) % 52; 
         if (futurePos >= 0 && futurePos <= 51) {
-            const kills = game.players.some(p => p.id !== player.id && p.pieces.includes(futurePos));
+            const kills = game.players.some(p => p.id !== player.id && p.pieces.includes(futurePos) && !p.bomb);
             if (kills) return move.index; 
         }
     }
@@ -283,7 +276,6 @@ export class GameService {
     return validMoves[Math.floor(Math.random() * validMoves.length)].index;
   }
 
-  // --- MOVE PIECE CON PODERES ---
   movePiece(roomId: string, playerId: string, pieceIndex: number): { success: boolean; eatenPlayerName?: string | null; powerEffect?: any } {
     const game = this.games.get(roomId);
     if (!game) return { success: false };
@@ -316,11 +308,16 @@ export class GameService {
     let powerEffect: any = null;
 
     if (newPos >= 0 && newPos <= 51) {
-        // 1. Check Kill
+        // 1. Comer (Kill) con INMUNIDAD DE BOMBA
         game.players.forEach(p => {
             if (p.id !== player.id) {
                 p.pieces.forEach((enemyPos, idx) => {
                     if (enemyPos === newPos) {
+                        // Si la víctima tiene bomba, NO muere (se superponen)
+                        if (p.bomb && p.bomb.pieceIndex === idx) {
+                            return; 
+                        }
+                        
                         p.pieces[idx] = -1; 
                         eatenPlayerName = p.name;
                     }
@@ -328,10 +325,9 @@ export class GameService {
             }
         });
 
-        // 2. Check PowerUp
+        // 2. Poderes
         if (game.powerUps.has(newPos)) {
-            // Consumir poder
-            game.powerUps.delete(newPos);
+            game.powerUps.delete(newPos); 
             powerEffect = this.applyPowerUp(game, player, pieceIndex);
         }
     }
@@ -342,7 +338,6 @@ export class GameService {
   }
 
   surrender(roomId: string, playerId: string): boolean {
-      // ... (Lógica de surrender igual que antes)
       const game = this.games.get(roomId);
       if (!game) return false;
       const player = game.players.find(p => p.id === playerId);
@@ -374,9 +369,9 @@ export class GameService {
     if (!game || game.status === 'finished') return;
 
     game.dice = null;
-    game.totalTurns++; // Contar turno global
+    game.totalTurns++; 
 
-    // Cada 6 turnos, intentar spawnear poderes
+    // SPAWN CADA 6 TURNOS
     if (game.totalTurns % 6 === 0) {
         this.spawnPowerUps(game);
     }
@@ -400,7 +395,6 @@ export class GameService {
     const game = this.games.get(roomId);
     if (!game) return null;
 
-    // Convertir Map de poderes a Array para enviar por socket
     const powerUpsArray = Array.from(game.powerUps.entries()).map(([pos, type]) => ({ pos, type }));
 
     return {
@@ -410,14 +404,13 @@ export class GameService {
       turnIndex: game.turnIndex,
       players: game.players,
       winners: game.winners,
-      powerUps: powerUpsArray, // Enviar poderes al front
+      powerUps: powerUpsArray,
     };
   }
 
   getGame(roomId: string) { return this.games.get(roomId); }
   
   removePlayer(id: string) {
-    // ... (Igual que antes)
     this.rooms.removePlayerFromRoom(id);
     for (const [roomId, game] of this.games.entries()) {
       if (game.status === 'waiting') {
