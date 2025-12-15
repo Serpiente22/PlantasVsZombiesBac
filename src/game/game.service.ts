@@ -111,17 +111,12 @@ export class GameService {
     return value;
   }
 
-  // --- SPAWN DE PODERES MEJORADO ---
   spawnPowerUps(game: GameState) {
-      // 1. Limpiar poderes viejos para que no se acumulen
-      game.powerUps.clear();
-
-      // 2. Generar 3 nuevos
+      game.powerUps.clear(); 
       let added = 0;
       let attempts = 0;
       while (added < 3 && attempts < 30) {
           const pos = Math.floor(Math.random() * 52);
-          
           const isOccupied = game.players.some(p => p.pieces.includes(pos));
           const hasPower = game.powerUps.has(pos);
           
@@ -150,14 +145,19 @@ export class GameService {
               const currentPos = player.pieces[pieceIndex];
               if (currentPos >= 0 && currentPos <= 51) {
                   let newPos = (currentPos + 4) % 52;
-                  player.pieces[pieceIndex] = newPos;
-                  msg = '🚀 ¡Turbo! Avanzas 4 casillas.';
+                  // Validar muro en salto
+                  if (!this.isWallAt(game, newPos)) {
+                      player.pieces[pieceIndex] = newPos;
+                      msg = '🚀 ¡Turbo! Avanzas 4 casillas.';
+                  } else {
+                      msg = '🚀 ¡Turbo bloqueado por Muro!';
+                  }
               } else {
                   msg = '🚀 ¡Turbo falló! (Zona segura).';
               }
               break;
           case 'DOUBLE_ROLL':
-              game.dice = null; // IMPORTANTE: Resetear para permitir tirar de nuevo
+              game.dice = null; 
               msg = '🎲 ¡Tira otra vez!';
               break;
           case 'X2_NEXT':
@@ -175,7 +175,6 @@ export class GameService {
               }
               break;
           case 'BOMB':
-              // Se le da valor 3. Explotará al FINALIZAR su 3er turno (incluyendo este).
               player.bomb = { pieceIndex, timer: 3 };
               msg = '💣 ¡TIENES LA BOMBA! Explota al finalizar tu 3er turno.';
               break;
@@ -184,37 +183,29 @@ export class GameService {
       return { type, msg };
   }
 
-  // --- LÓGICA DE EXPLOSIÓN CONTROLADA ---
   handleTurnEnd(game: GameState, playerId: string, server: Server) {
       const p = game.players.find(pl => pl.id === playerId);
       if (!p || !p.bomb) return;
 
-      // Restar contador SOLO al jugador que terminó turno
       p.bomb.timer--;
-
       const currentPos = p.pieces[p.bomb.pieceIndex];
-      // Si la ficha ya no está en juego o llegó a meta, quitar bomba
       if (currentPos === -1 || currentPos >= 100) {
           p.bomb = null;
           return;
       }
 
       if (p.bomb.timer <= 0) {
-          // ¡BOOM!
           const bombPos = currentPos;
           const victims: string[] = [];
 
-          // 1. Muere el portador
           p.pieces[p.bomb.pieceIndex] = -1;
           victims.push(p.name);
 
-          // 2. Mueren los de alrededor (Radio 2)
           game.players.forEach(other => {
               other.pieces.forEach((pos, idx) => {
                   if (pos >= 0 && pos <= 51) {
                       let dist = Math.abs(pos - bombPos);
                       if (dist > 26) dist = 52 - dist;
-
                       if (dist <= 2) {
                           other.pieces[idx] = -1;
                           if (!victims.includes(other.name)) victims.push(other.name);
@@ -228,13 +219,49 @@ export class GameService {
       }
   }
 
-  canMove(pos: number, dice: number, color: Color): boolean {
+  // --- LÓGICA DE MUROS ---
+  isWallAt(game: GameState, pos: number): boolean {
+      for (const p of game.players) {
+          const count = p.pieces.filter(piecePos => piecePos === pos).length;
+          if (count >= 2) return true;
+      }
+      return false;
+  }
+
+  isPathBlocked(game: GameState, currentPos: number, steps: number, myColor: Color): boolean {
+      if (currentPos < 0 || currentPos > 51) return false;
+
+      for (let i = 1; i <= steps; i++) {
+          const checkPos = (currentPos + i) % 52;
+          
+          // Verificar si hay un muro
+          for (const p of game.players) {
+              if (p.color !== myColor) { // Solo muros enemigos bloquean
+                  const count = p.pieces.filter(pp => pp === checkPos).length;
+                  if (count >= 2) return true;
+              }
+          }
+      }
+      return false;
+  }
+
+  canMove(roomId: string, pos: number, dice: number, color: Color): boolean {
+    const game = this.games.get(roomId);
+    if (!game) return false;
+
     if (pos === -1) return dice === 1 || dice === 6;
+    
+    // Validar Muros
+    if (pos >= 0 && pos <= 51) {
+        if (this.isPathBlocked(game, pos, dice, color)) return false;
+    }
+
     const config = this.boardConfig[color];
     if (pos >= 100) {
       const stepsToGoal = (config.finalPathStart + 5) - pos;
       return dice <= stepsToGoal;
     }
+    
     let distanceToTurn = config.turn - pos;
     if (distanceToTurn < 0) distanceToTurn += 52;
     if (dice > distanceToTurn) {
@@ -249,7 +276,7 @@ export class GameService {
     if (!game || game.dice === null) return false;
     const player = game.players[game.turnIndex];
     if (!player) return false;
-    return player.pieces.some(pos => this.canMove(pos, game.dice!, player.color));
+    return player.pieces.some(pos => this.canMove(roomId, pos, game.dice!, player.color));
   }
 
   getAutomatedBotMove(roomId: string): number {
@@ -257,7 +284,7 @@ export class GameService {
     if (!game || game.dice === null) return -1;
     const player = game.players[game.turnIndex];
     const validMoves = player.pieces
-        .map((pos, index) => ({ index, pos, canMove: this.canMove(pos, game.dice!, player.color) }))
+        .map((pos, index) => ({ index, pos, canMove: this.canMove(roomId, pos, game.dice!, player.color) }))
         .filter(m => m.canMove);
     if (validMoves.length === 0) return -1;
     
@@ -287,7 +314,7 @@ export class GameService {
     if (dice <= 0) return { success: false };
 
     const currentPos = player.pieces[pieceIndex];
-    if (!this.canMove(currentPos, dice, player.color)) return { success: false };
+    if (!this.canMove(roomId, currentPos, dice, player.color)) return { success: false };
 
     let newPos = currentPos;
     const config = this.boardConfig[player.color];
@@ -301,36 +328,34 @@ export class GameService {
       else newPos = (currentPos + dice) % 52;
     }
     
-    player.pieces[pieceIndex] = newPos;
-    game.dice = null;
-
     let eatenPlayerName: string | null = null;
     let powerEffect: any = null;
 
     if (newPos >= 0 && newPos <= 51) {
-        // 1. Comer (Kill) con INMUNIDAD DE BOMBA
+        // Lógica de comer
         game.players.forEach(p => {
             if (p.id !== player.id) {
-                p.pieces.forEach((enemyPos, idx) => {
-                    if (enemyPos === newPos) {
-                        // Si la víctima tiene bomba, NO muere (se superponen)
-                        if (p.bomb && p.bomb.pieceIndex === idx) {
-                            return; 
-                        }
-                        
-                        p.pieces[idx] = -1; 
-                        eatenPlayerName = p.name;
-                    }
-                });
+                // Verificar cuántas fichas tiene el enemigo aquí
+                const enemyIndices = p.pieces.map((pos, i) => pos === newPos ? i : -1).filter(i => i !== -1);
+                
+                // SOLO SE COME SI HAY 1 FICHA. Si hay 2+, es muro (inmune).
+                if (enemyIndices.length === 1) {
+                    const idx = enemyIndices[0];
+                    if (p.bomb && p.bomb.pieceIndex === idx) return; // Bomba inmune
+                    p.pieces[idx] = -1; 
+                    eatenPlayerName = p.name;
+                }
             }
         });
 
-        // 2. Poderes
         if (game.powerUps.has(newPos)) {
             game.powerUps.delete(newPos); 
             powerEffect = this.applyPowerUp(game, player, pieceIndex);
         }
     }
+
+    player.pieces[pieceIndex] = newPos;
+    game.dice = null;
 
     this.checkWinCondition(game, player);
     
@@ -371,7 +396,6 @@ export class GameService {
     game.dice = null;
     game.totalTurns++; 
 
-    // SPAWN CADA 6 TURNOS
     if (game.totalTurns % 6 === 0) {
         this.spawnPowerUps(game);
     }
